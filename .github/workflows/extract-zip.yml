@@ -1,0 +1,108 @@
+name: Extract ZIP into Repo
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  extract:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install unzip
+        shell: bash
+        run: |
+          set -e
+          sudo apt-get update
+          sudo apt-get install -y unzip
+
+      - name: Find newest ZIP in repo root
+        id: findzip
+        shell: bash
+        run: |
+          set -e
+
+          ZIP_FILE="$(find . -maxdepth 1 -type f -name '*.zip' -printf '%T@ %p\n' | sort -nr | head -n 1 | cut -d' ' -f2-)"
+
+          if [ -z "$ZIP_FILE" ]; then
+            echo "No ZIP file found in repo root."
+            exit 1
+          fi
+
+          ZIP_FILE="${ZIP_FILE#./}"
+
+          echo "zip_file=$ZIP_FILE" >> "$GITHUB_OUTPUT"
+          echo "Found ZIP: $ZIP_FILE"
+
+      - name: Show repo before extraction
+        shell: bash
+        run: |
+          echo "=== BEFORE ==="
+          find . -maxdepth 4 | sed 's#^#- #'
+
+      - name: Clean repo except .git, .github, and ZIP
+        shell: bash
+        run: |
+          set -e
+          ZIP_FILE="${{ steps.findzip.outputs.zip_file }}"
+
+          find . -mindepth 1 -maxdepth 1 \
+            ! -name ".git" \
+            ! -name ".github" \
+            ! -name "$ZIP_FILE" \
+            -exec rm -rf {} +
+
+          mkdir -p .github/workflows
+
+      - name: Extract ZIP into repo root
+        shell: bash
+        run: |
+          set -e
+          ZIP_FILE="${{ steps.findzip.outputs.zip_file }}"
+
+          unzip -o "$ZIP_FILE" -d . \
+            -x ".git/*" ".git/**" ".github/workflows/*" ".github/workflows/**"
+
+      - name: Remove ZIP after extraction
+        shell: bash
+        run: |
+          set -e
+          ZIP_FILE="${{ steps.findzip.outputs.zip_file }}"
+          rm -f "$ZIP_FILE"
+
+      - name: Final safety check
+        shell: bash
+        run: |
+          set -e
+          mkdir -p .github/workflows
+
+      - name: Show repo after extraction
+        shell: bash
+        run: |
+          echo "=== AFTER ==="
+          find . -maxdepth 4 | sed 's#^#- #'
+
+      - name: Commit extracted files
+        shell: bash
+        run: |
+          set -e
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add -A
+
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+            exit 0
+          fi
+
+          git commit -m "Extract ZIP into repo"
+          git push
