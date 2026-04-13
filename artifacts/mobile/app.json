@@ -2,6 +2,7 @@
   "expo": {
     "name": "SAP WMS Mobile",
     "slug": "sapwmsmobile",
+    "owner": "aakashpanta",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
@@ -41,7 +42,6 @@
       "eas": {
         "projectId": "63e8f63a-9b4c-43ff-9db1-0bd824c85249"
       }
-    },
-    "owner": "aakashpanta"
+    }
   }
 }
