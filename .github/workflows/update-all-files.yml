@@ -14,6 +14,16 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Enable pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@latest --activate
+
       - name: Create required directories
         run: |
           mkdir -p .github/workflows
@@ -67,15 +77,22 @@ jobs:
                     eas-version: latest
                     token: ${{ secrets.EXPO_TOKEN }}
 
-                - name: Install pnpm
-                  run: npm install -g pnpm
+                - name: Enable pnpm
+                  run: |
+                    corepack enable
+                    corepack prepare pnpm@latest --activate
 
                 - name: Install dependencies
-                  run: pnpm install
+                  run: pnpm install --no-frozen-lockfile
+                  working-directory: .
+
+                - name: Verify Expo auth
+                  run: npx eas-cli@latest whoami
 
                 - name: Build Android on EAS
-                  run: eas build --platform android --profile ${{ github.event.inputs.profile || 'preview' }} --non-interactive --wait
+                  run: npx eas-cli@latest build --platform android --profile ${{ github.event.inputs.profile || 'preview' }} --non-interactive --wait
                   env:
+                    NODE_ENV: production
                     EXPO_PUBLIC_DOMAIN: ${{ secrets.REPLIT_DEV_DOMAIN || 'localhost' }}
 
             build-info:
@@ -94,7 +111,7 @@ jobs:
                     echo "| Commit | ${{ github.sha }} |" >> $GITHUB_STEP_SUMMARY
                     echo "| Status | ${{ needs.build-android.result }} |" >> $GITHUB_STEP_SUMMARY
                     echo "" >> $GITHUB_STEP_SUMMARY
-                    echo "Download the APK from the Expo build link shown in the build logs/dashboard." >> $GITHUB_STEP_SUMMARY
+                    echo "Open the Expo build link printed in the logs to monitor progress and download the APK." >> $GITHUB_STEP_SUMMARY
           YAML
 
       - name: Replace eas.json
@@ -109,6 +126,7 @@ jobs:
               "development": {
                 "developmentClient": true,
                 "distribution": "internal",
+                "environment": "development",
                 "android": {
                   "gradleCommand": ":app:assembleDebug",
                   "buildType": "apk"
@@ -119,6 +137,7 @@ jobs:
               },
               "preview": {
                 "distribution": "internal",
+                "environment": "preview",
                 "android": {
                   "buildType": "apk"
                 },
@@ -127,6 +146,7 @@ jobs:
                 }
               },
               "production": {
+                "environment": "production",
                 "android": {
                   "buildType": "apk"
                 },
@@ -144,11 +164,61 @@ jobs:
           }
           JSON
 
-      - name: Commit and push changes
+      - name: Patch app.json projectId
+        run: |
+          node <<'NODE'
+          const fs = require('fs');
+          const path = 'artifacts/mobile/app.json';
+          const data = JSON.parse(fs.readFileSync(path, 'utf8'));
+          data.expo ||= {};
+          data.expo.extra ||= {};
+          data.expo.extra.eas ||= {};
+          data.expo.extra.eas.projectId = '63e8f63a-9b4c-43ff-9db1-0bd824c85249';
+          fs.writeFileSync(path, JSON.stringify(data, null, 2) + '\n');
+          NODE
+
+      - name: Patch package.json for WebView
+        run: |
+          node <<'NODE'
+          const fs = require('fs');
+          const path = 'artifacts/mobile/package.json';
+          const data = JSON.parse(fs.readFileSync(path, 'utf8'));
+
+          data.dependencies ||= {};
+          data.devDependencies ||= {};
+
+          delete data.devDependencies['react-native-webview'];
+          data.dependencies['react-native-webview'] = '~13.15.0';
+
+          fs.writeFileSync(path, JSON.stringify(data, null, 2) + '\n');
+          NODE
+
+      - name: Install dependencies and refresh lockfile
+        run: |
+          pnpm install --no-frozen-lockfile
+
+      - name: Show updated versions
+        run: |
+          echo "app.json projectId:"
+          node -e "const j=require('./artifacts/mobile/app.json'); console.log(j.expo?.extra?.eas?.projectId)"
+          echo "react-native-webview version:"
+          node -e "const j=require('./artifacts/mobile/package.json'); console.log(j.dependencies?.['react-native-webview'] || j.devDependencies?.['react-native-webview'])"
+
+      - name: Commit changes
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add .github/workflows/build-android.yml artifacts/mobile/eas.json
+          git add .github/workflows/build-android.yml artifacts/mobile/eas.json artifacts/mobile/app.json artifacts/mobile/package.json pnpm-lock.yaml
           git diff --cached --quiet && echo "No changes to commit" && exit 0
-          git commit -m "Update Android build workflow and eas config"
-          git push
+          git commit -m "Update Expo build files and WebView dependency"
+
+      - name: Push changes
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+          REPO: ${{ github.repository }}
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          if [ -n "$GH_PAT" ]; then
+            git remote set-url origin "https://x-access-token:${GH_PAT}@github.com/${REPO}.git"
+          fi
+          git push origin "HEAD:${BRANCH}"
