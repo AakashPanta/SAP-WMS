@@ -49,8 +49,11 @@ jobs:
       - name: Install dependencies
         run: pnpm install
 
+      - name: Verify Expo auth
+        run: npx eas-cli@latest whoami
+
       - name: Build Android on EAS
-        run: eas build --platform android --profile ${{ github.event.inputs.profile || 'preview' }} --non-interactive --wait
+        run: npx eas-cli@latest build --platform android --profile ${{ github.event.inputs.profile || 'preview' }} --non-interactive --wait
         env:
           EXPO_PUBLIC_DOMAIN: ${{ secrets.REPLIT_DEV_DOMAIN || 'localhost' }}
 
@@ -70,4 +73,4 @@ jobs:
           echo "| Commit | ${{ github.sha }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Status | ${{ needs.build-android.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Download the APK from the Expo build link shown in the build logs/dashboard." >> $GITHUB_STEP_SUMMARY
+          echo "Open the Expo build link printed in the logs to monitor progress and download the APK." >> $GITHUB_STEP_SUMMARY
