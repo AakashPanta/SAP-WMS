@@ -17,6 +17,9 @@ on:
     paths:
       - "artifacts/mobile/**"
 
+permissions:
+  contents: read
+
 jobs:
   build-android:
     name: Build Android APK
@@ -46,17 +49,10 @@ jobs:
       - name: Install dependencies
         run: pnpm install
 
-      - name: Build Android APK
-        run: eas build --platform android --profile ${{ github.event.inputs.profile || 'preview' }} --non-interactive --output ./build/app.apk
+      - name: Build Android on EAS
+        run: eas build --platform android --profile ${{ github.event.inputs.profile || 'preview' }} --non-interactive --wait
         env:
           EXPO_PUBLIC_DOMAIN: ${{ secrets.REPLIT_DEV_DOMAIN || 'localhost' }}
-
-      - name: Upload APK artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: android-apk-${{ github.sha }}
-          path: artifacts/mobile/build/app.apk
-          retention-days: 14
 
   build-info:
     name: Build Summary
@@ -73,3 +69,5 @@ jobs:
           echo "| Profile | ${{ github.event.inputs.profile || 'preview' }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Commit | ${{ github.sha }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Status | ${{ needs.build-android.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Download the APK from the Expo build link shown in the build logs/dashboard." >> $GITHUB_STEP_SUMMARY
