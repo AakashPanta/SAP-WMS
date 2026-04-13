@@ -43,11 +43,17 @@ jobs:
           eas-version: latest
           token: ${{ secrets.EXPO_TOKEN }}
 
-      - name: Install pnpm
-        run: npm install -g pnpm
+      - name: Enable pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@latest --activate
 
       - name: Install dependencies
-        run: pnpm install
+        run: pnpm install --no-frozen-lockfile
+        working-directory: /home/runner/work/${{ github.event.repository.name }}/${{ github.event.repository.name }}
+
+      - name: Verify Expo auth
+        run: npx eas-cli@latest whoami
 
       - name: Verify Expo auth
         run: npx eas-cli@latest whoami
@@ -55,6 +61,7 @@ jobs:
       - name: Build Android on EAS
         run: npx eas-cli@latest build --platform android --profile ${{ github.event.inputs.profile || 'preview' }} --non-interactive --wait
         env:
+          NODE_ENV: production
           EXPO_PUBLIC_DOMAIN: ${{ secrets.REPLIT_DEV_DOMAIN || 'localhost' }}
 
   build-info:
