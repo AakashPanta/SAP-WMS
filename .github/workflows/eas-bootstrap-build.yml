@@ -1,0 +1,47 @@
+name: EAS Bootstrap + Build Android
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: artifacts/mobile
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Setup Expo and EAS
+        uses: expo/expo-github-action@v8
+        with:
+          eas-version: latest
+          token: ${{ secrets.EXPO_TOKEN }}
+
+      - name: Install pnpm
+        run: npm install -g pnpm
+
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Verify Expo auth
+        run: npx eas-cli@latest whoami
+
+      - name: Link existing EAS project
+        run: npx eas-cli@latest init --id "${{ secrets.EAS_PROJECT_ID }}" --force --non-interactive
+
+      - name: Configure EAS Build
+        run: npx eas-cli@latest build:configure -p android
+
+      - name: Trigger Android preview build
+        run: npx eas-cli@latest build --platform android --profile preview --non-interactive --no-wait
