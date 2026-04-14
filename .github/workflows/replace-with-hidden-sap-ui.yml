@@ -1,0 +1,550 @@
+name: Replace With Hidden SAP Background UI
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  replace-screen:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Enable pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@latest --activate
+
+      - name: Ensure target directory exists
+        run: |
+          mkdir -p artifacts/mobile/app
+
+      - name: Replace app index screen
+        run: |
+          cat > artifacts/mobile/app/index.tsx <<'TSX'
+          import React, { useEffect, useMemo, useRef, useState } from "react";
+          import {
+            ActivityIndicator,
+            KeyboardAvoidingView,
+            Platform,
+            SafeAreaView,
+            ScrollView,
+            StatusBar,
+            StyleSheet,
+            Text,
+            TextInput,
+            TouchableOpacity,
+            View,
+          } from "react-native";
+          import {
+            WebView,
+            WebViewMessageEvent,
+            WebViewNavigation,
+          } from "react-native-webview";
+
+          const SAP_RFUI_URL =
+            "https://my419914.s4hana.cloud.sap/sap/bc/gui/sap/its/ewm_mobgui?~transaction=/scwm/rfui&sap-language=EN#";
+
+          const ALLOWED_HOSTS = [
+            "my419914.s4hana.cloud.sap",
+            "aoayy8srk.accounts.cloud.sap",
+          ];
+
+          type Stage =
+            | "boot"
+            | "login"
+            | "authenticating"
+            | "warehouse"
+            | "submittingWarehouse"
+            | "ready";
+
+          type SapPageKind = "unknown" | "login" | "rfui-logon" | "rfui";
+
+          type SapPageSnapshot = {
+            url: string;
+            host: string;
+            title: string;
+            kind: SapPageKind;
+            messages: string[];
+          };
+
+          function escapeForInjectedJs(value: string) {
+            return JSON.stringify(value);
+          }
+
+          const INSPECT_PAGE_JS = `
+          (function () {
+            function unique(values) {
+              var out = [];
+              for (var i = 0; i < values.length; i += 1) {
+                var v = String(values[i] || "").trim();
+                if (v && out.indexOf(v) === -1) out.push(v);
+              }
+              return out;
+            }
+
+            function safeText(value) {
+              return String(value || "").replace(/\\s+/g, " ").trim();
+            }
+
+            function collectMessages() {
+              var selectors = [
+                '[role="alert"]',
+                '.urMsgBar',
+                '.urTxtErr',
+                '.message',
+                '.sapMMsgStrip',
+                '.sapMMessageStrip',
+                '.sapUiMessage',
+                '.error',
+                '.warning',
+                '.info'
+              ];
+
+              var items = [];
+              selectors.forEach(function (selector) {
+                var nodes = document.querySelectorAll(selector);
+                for (var i = 0; i < nodes.length; i += 1) {
+                  var text = safeText(nodes[i].innerText || nodes[i].textContent || "");
+                  if (text) items.push(text);
+                }
+              });
+
+              if (!items.length && document.body) {
+                var bodyText = safeText(document.body.innerText || "");
+                var lines = bodyText.split(/\\n+/).map(safeText).filter(Boolean);
+                items = lines.filter(function (line) {
+                  var lower = line.toLowerCase();
+                  return (
+                    lower.indexOf("invalid") >= 0 ||
+                    lower.indexOf("incorrect") >= 0 ||
+                    lower.indexOf("error") >= 0 ||
+                    lower.indexOf("failed") >= 0 ||
+                    lower.indexOf("warning") >= 0
+                  );
+                });
+              }
+
+              return unique(items).slice(0, 5);
+            }
+
+            function inspectPage() {
+              try {
+                var host = location.host || "";
+                var title = safeText(document.title || "");
+                var bodyText = document.body ? safeText(document.body.innerText || "") : "";
+                var lowerBody = bodyText.toLowerCase();
+
+                var inputs = Array.prototype.slice.call(
+                  document.querySelectorAll("input, textarea, select")
+                ).map(function (el) {
+                  return {
+                    name: safeText(el.getAttribute("name") || ""),
+                    id: safeText(el.getAttribute("id") || ""),
+                    type: safeText(el.getAttribute("type") || el.tagName || "").toLowerCase(),
+                    placeholder: safeText(el.getAttribute("placeholder") || ""),
+                    autocomplete: safeText(el.getAttribute("autocomplete") || ""),
+                  };
+                });
+
+                var hasPassword = !!document.querySelector('input[type="password"]');
+                var hasWarehouse =
+                  lowerBody.indexOf("warehouse") >= 0 ||
+                  inputs.some(function (field) {
+                    var hay =
+                      (field.name + " " + field.id + " " + field.placeholder).toLowerCase();
+                    return hay.indexOf("warehouse") >= 0 || hay.indexOf("lgnum") >= 0;
+                  });
+
+                var hasResource =
+                  lowerBody.indexOf("resource") >= 0 ||
+                  inputs.some(function (field) {
+                    var hay =
+                      (field.name + " " + field.id + " " + field.placeholder).toLowerCase();
+                    return hay.indexOf("resource") >= 0 || hay.indexOf("rsrc") >= 0;
+                  });
+
+                var hasDevice =
+                  lowerBody.indexOf("pres. dev") >= 0 ||
+                  lowerBody.indexOf("presentation device") >= 0 ||
+                  inputs.some(function (field) {
+                    var hay =
+                      (field.name + " " + field.id + " " + field.placeholder).toLowerCase();
+                    return (
+                      hay.indexOf("device") >= 0 ||
+                      hay.indexOf("presentation") >= 0 ||
+                      hay.indexOf("pres") >= 0
+                    );
+                  });
+
+                var kind = "unknown";
+                if (host.indexOf("accounts.cloud.sap") >= 0 || hasPassword) {
+                  kind = "login";
+                } else if (host.indexOf("s4hana.cloud.sap") >= 0 && hasWarehouse && hasResource) {
+                  kind = "rfui-logon";
+                } else if (host.indexOf("s4hana.cloud.sap") >= 0) {
+                  kind = "rfui";
+                }
+
+                var payload = {
+                  type: "PAGE_STATE",
+                  payload: {
+                    url: location.href,
+                    host: host,
+                    title: title || "SAP",
+                    kind: kind,
+                    messages: collectMessages(),
+                    flags: {
+                      hasWarehouse: hasWarehouse,
+                      hasResource: hasResource,
+                      hasDevice: hasDevice
+                    }
+                  }
+                };
+
+                window.ReactNativeWebView.postMessage(JSON.stringify(payload));
+              } catch (error) {
+                window.ReactNativeWebView.postMessage(
+                  JSON.stringify({
+                    type: "PAGE_STATE_ERROR",
+                    error: String(error && error.message ? error.message : error),
+                  })
+                );
+              }
+            }
+
+            setTimeout(inspectPage, 50);
+            setTimeout(inspectPage, 500);
+            setTimeout(inspectPage, 1500);
+
+            document.addEventListener("DOMContentLoaded", inspectPage);
+            window.addEventListener("load", inspectPage);
+          })();
+          true;
+          `;
+
+          function createLoginInjection(
+            username: string,
+            password: string,
+            keepSignedIn: boolean,
+          ) {
+            return `
+          (function () {
+            try {
+              function post(message) {
+                window.ReactNativeWebView.postMessage(JSON.stringify(message));
+              }
+
+              function setNativeValue(el, value) {
+                var last = el.value;
+                el.focus();
+                el.value = value;
+                var tracker = el._valueTracker;
+                if (tracker) {
+                  tracker.setValue(last);
+                }
+                el.dispatchEvent(new Event("input", { bubbles: true }));
+                el.dispatchEvent(new Event("change", { bubbles: true }));
+                el.blur();
+              }
+
+              function getText(node) {
+                return String(node && (node.innerText || node.textContent) || "")
+                  .replace(/\\s+/g, " ")
+                  .trim()
+                  .toLowerCase();
+              }
+
+              var inputs = Array.prototype.slice.call(document.querySelectorAll("input"));
+              var usernameField =
+                document.querySelector('input[type="email"]') ||
+                inputs.find(function (el) {
+                  var hay = (
+                    (el.name || "") + " " +
+                    (el.id || "") + " " +
+                    (el.placeholder || "") + " " +
+                    (el.autocomplete || "")
+                  ).toLowerCase();
+                  return (
+                    hay.indexOf("user") >= 0 ||
+                    hay.indexOf("email") >= 0 ||
+                    hay.indexOf("login") >= 0
+                  );
+                }) ||
+                inputs.find(function (el) {
+                  var type = String(el.type || "").toLowerCase();
+                  return type === "text" || type === "email";
+                });
+
+              var passwordField = document.querySelector('input[type="password"]');
+
+              if (!usernameField || !passwordField) {
+                post({
+                  type: "ACTION_RESULT",
+                  action: "login",
+                  ok: false,
+                  error: "Login fields not found on SAP page.",
+                });
+                true;
+                return;
+              }
+
+              setNativeValue(usernameField, ${escapeForInjectedJs(username)});
+              setNativeValue(passwordField, ${escapeForInjectedJs(password)});
+
+              var wantKeepSignedIn = ${keepSignedIn ? "true" : "false"};
+              if (wantKeepSignedIn) {
+                var checkbox = Array.prototype.slice
+                  .call(document.querySelectorAll('input[type="checkbox"]'))
+                  .find(function (el) {
+                    var labelText = "";
+                    if (el.id) {
+                      var label = document.querySelector('label[for="' + el.id + '"]');
+                      labelText = getText(label);
+                    }
+                    var combined = (
+                      labelText + " " + (el.name || "") + " " + (el.id || "")
+                    ).toLowerCase();
+
+                    return (
+                      combined.indexOf("keep me signed in") >= 0 ||
+                      combined.indexOf("remember") >= 0 ||
+                      combined.indexOf("keep") >= 0
+                    );
+                  });
+
+                if (checkbox && !checkbox.checked) {
+                  checkbox.click();
+                }
+              }
+
+              var submitButton =
+                Array.prototype.slice
+                  .call(document.querySelectorAll('button, input[type="submit"], input[type="button"]'))
+                  .find(function (el) {
+                    var label = getText(el) || String(el.value || "").toLowerCase();
+                    return (
+                      label.indexOf("continue") >= 0 ||
+                      label.indexOf("sign in") >= 0 ||
+                      label.indexOf("login") >= 0 ||
+                      label.indexOf("log on") >= 0
+                    );
+                  });
+
+              if (submitButton) {
+                submitButton.click();
+              } else if (passwordField.form) {
+                if (typeof passwordField.form.requestSubmit === "function") {
+                  passwordField.form.requestSubmit();
+                } else {
+                  passwordField.form.submit();
+                }
+              }
+
+              post({
+                type: "ACTION_RESULT",
+                action: "login",
+                ok: true,
+                status: "submitted",
+              });
+            } catch (error) {
+              window.ReactNativeWebView.postMessage(
+                JSON.stringify({
+                  type: "ACTION_RESULT",
+                  action: "login",
+                  ok: false,
+                  error: String(error && error.message ? error.message : error),
+                })
+              );
+            }
+          })();
+          true;
+          `;
+          }
+
+          function createWarehouseInjection(
+            warehouse: string,
+            resource: string,
+            device: string,
+          ) {
+            return `
+          (function () {
+            try {
+              function post(message) {
+                window.ReactNativeWebView.postMessage(JSON.stringify(message));
+              }
+
+              function setNativeValue(el, value) {
+                var last = el.value;
+                el.focus();
+                el.value = value;
+                var tracker = el._valueTracker;
+                if (tracker) {
+                  tracker.setValue(last);
+                }
+                el.dispatchEvent(new Event("input", { bubbles: true }));
+                el.dispatchEvent(new Event("change", { bubbles: true }));
+              }
+
+              function findByHints(hints) {
+                var elements = Array.prototype.slice.call(
+                  document.querySelectorAll('input:not([type]), input[type="text"], textarea')
+                );
+
+                var found = elements.find(function (el) {
+                  var hay = (
+                    (el.name || "") + " " +
+                    (el.id || "") + " " +
+                    (el.placeholder || "")
+                  ).toLowerCase();
+
+                  return hints.some(function (hint) {
+                    return hay.indexOf(hint) >= 0;
+                  });
+                });
+
+                return found || null;
+              }
+
+              var textInputs = Array.prototype.slice.call(
+                document.querySelectorAll('input:not([type]), input[type="text"], textarea')
+              );
+
+              var warehouseField = findByHints(["warehouse", "lgnum"]) || textInputs[0] || null;
+              var resourceField = findByHints(["resource", "rsrc"]) || textInputs[1] || null;
+              var deviceField =
+                findByHints(["presentation", "device", "pres", "disp"]) ||
+                textInputs[2] ||
+                null;
+
+              if (!warehouseField || !resourceField || !deviceField) {
+                post({
+                  type: "ACTION_RESULT",
+                  action: "warehouse",
+                  ok: false,
+                  error: "RFUI logon fields not found on SAP page.",
+                });
+                true;
+                return;
+              }
+
+              setNativeValue(warehouseField, ${escapeForInjectedJs(warehouse)});
+              setNativeValue(resourceField, ${escapeForInjectedJs(resource)});
+              setNativeValue(deviceField, ${escapeForInjectedJs(device)});
+
+              var submitButton =
+                Array.prototype.slice
+                  .call(document.querySelectorAll('button, input[type="submit"], input[type="button"]'))
+                  .find(function (el) {
+                    var label = String(el.innerText || el.textContent || el.value || "")
+                      .replace(/\\s+/g, " ")
+                      .trim()
+                      .toLowerCase();
+
+                    return (
+                      label.indexOf("enter") >= 0 ||
+                      label.indexOf("continue") >= 0 ||
+                      label.indexOf("log on") >= 0 ||
+                      label.indexOf("connect") >= 0 ||
+                      label.indexOf("f2") >= 0
+                    );
+                  });
+
+              if (submitButton) {
+                submitButton.click();
+              } else if (deviceField.form) {
+                if (typeof deviceField.form.requestSubmit === "function") {
+                  deviceField.form.requestSubmit();
+                } else {
+                  deviceField.form.submit();
+                }
+              } else {
+                deviceField.dispatchEvent(
+                  new KeyboardEvent("keydown", { key: "Enter", code: "Enter", bubbles: true })
+                );
+                deviceField.dispatchEvent(
+                  new KeyboardEvent("keyup", { key: "Enter", code: "Enter", bubbles: true })
+                );
+              }
+
+              post({
+                type: "ACTION_RESULT",
+                action: "warehouse",
+                ok: true,
+                status: "submitted",
+              });
+            } catch (error) {
+              window.ReactNativeWebView.postMessage(
+                JSON.stringify({
+                  type: "ACTION_RESULT",
+                  action: "warehouse",
+                  ok: false,
+                  error: String(error && error.message ? error.message : error),
+                })
+              );
+            }
+          })();
+          true;
+          `;
+          }
+
+          export default function IndexScreen() {
+            const webViewRef = useRef<WebView>(null);
+            const resourceInputRef = useRef<TextInput>(null);
+            const deviceInputRef = useRef<TextInput>(null);
+
+            const [stage, setStage] = useState<Stage>("boot");
+            const [page, setPage] = useState<SapPageSnapshot | null>(null);
+            const [showLiveSap, setShowLiveSap] = useState(false);
+
+            const [username, setUsername] = useState("");
+            const [password, setPassword] = useState("");
+            const [keepSignedIn, setKeepSignedIn] = useState(true);
+
+            const [warehouse, setWarehouse] = useState("RM01");
+            const [resource, setResource] = useState("");
+            const [presentationDevice, setPresentationDevice] = useState("SE01");
+
+            const [infoText, setInfoText] = useState("Preparing SAP...");
+            const [errorText, setErrorText] = useState("");
+            const [canGoBack, setCanGoBack] = useState(false);
+
+            const allowedHosts = useMemo(() => ALLOWED_HOSTS, []);
+
+            useEffect(() => {
+              if (!page) return;
+
+              if (stage === "boot") {
+                if (page.kind === "login") {
+                  setStage("login");
+                  setInfoText("Sign in with your SAP account.");
+                } else if (page.kind === "rfui-logon") {
+                  setStage("warehouse");
+                  setInfoText("SAP session found. Complete warehouse setup.");
+                } else if (page.kind === "rfui") {
+                  setStage("ready");
+                  setInfoText("Connected to SAP.");
+                }
+                return;
+              }
+
+              if (stage === "authenticating") {
+                if (page.kind === "rfui-logon") {
+                  setStage("warehouse");
+                  setErrorText("");
+                  setInfoText("SAP login successful. Complete warehouse setup.");
+                } else if (page.kind === "rfui") {
+                  setStage("ready");
+                  setErrorText("");
+                  setInfoText("SAP login successful.");
+                } else if (page.kind === "login" && page.messages.length) {
+                  setStage(
