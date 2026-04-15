@@ -29,21 +29,37 @@ jobs:
       - name: Install dependencies
         run: pnpm install --no-frozen-lockfile
 
+      - name: Create log directory
+        run: mkdir -p ci-logs
+
       - name: Sync Expo dependencies first
         env:
           CI: "1"
           EXPO_NO_GIT_STATUS: "1"
         run: |
-          npx expo install --fix
-          pnpm install --no-frozen-lockfile
+          set -o pipefail
+          npx expo install --fix 2>&1 | tee ci-logs/01-expo-install-fix.log
+          pnpm install --no-frozen-lockfile 2>&1 | tee ci-logs/02-pnpm-install-after-fix.log
 
       - name: Generate native Android project
         env:
           CI: "1"
           EXPO_NO_GIT_STATUS: "1"
         run: |
-          npx expo prebuild --platform android
-          pnpm install --no-frozen-lockfile
+          set -o pipefail
+
+          rm -rf android
+
+          npx expo prebuild --platform android --no-install 2>&1 | tee ci-logs/03-expo-prebuild.log
+
+          pnpm install --no-frozen-lockfile 2>&1 | tee ci-logs/04-pnpm-install-after-prebuild.log
+
+      - name: Show Android project structure
+        run: |
+          {
+            echo "=== android directory ==="
+            find android -maxdepth 3 -type f | sort
+          } | tee ci-logs/05-android-project-structure.log
 
       - name: Enable KVM
         run: |
@@ -60,30 +76,45 @@ jobs:
           emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
           working-directory: artifacts/mobile/android
           script: |
-            ./gradlew assembleDebug
+            set -o pipefail
+
+            ./gradlew assembleDebug 2>&1 | tee ../ci-logs/06-gradle-assemble-debug.log
 
             APK_PATH="app/build/outputs/apk/debug/app-debug.apk"
             if [ ! -f "$APK_PATH" ]; then
-              echo "APK not found at $APK_PATH"
-              find app/build/outputs -type f || true
+              echo "APK not found at $APK_PATH" | tee -a ../ci-logs/06-gradle-assemble-debug.log
+              find app/build/outputs -type f | sort | tee ../ci-logs/07-apk-output-files.log || true
               exit 1
             fi
 
-            adb install -r "$APK_PATH"
+            adb install -r "$APK_PATH" 2>&1 | tee ../ci-logs/08-adb-install.log
 
             APP_ID=$(node -e "const app=require('../app.json'); console.log((app.expo && app.expo.android && app.expo.android.package) || '')")
             if [ -z "$APP_ID" ]; then
-              echo "Could not determine Android package name from app.json"
+              echo "Could not determine Android package name from app.json" | tee ../ci-logs/09-app-id.log
               exit 1
             fi
 
-            adb shell monkey -p "$APP_ID" -c android.intent.category.LAUNCHER 1
+            echo "$APP_ID" | tee ../ci-logs/09-app-id.log
+
+            adb shell monkey -p "$APP_ID" -c android.intent.category.LAUNCHER 1 2>&1 | tee ../ci-logs/10-app-launch.log
             sleep 20
 
             adb exec-out screencap -p > ../android-smoke-test.png
+            adb logcat -d > ../ci-logs/11-logcat.txt || true
 
       - name: Upload screenshot artifact
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: android-smoke-test
           path: artifacts/mobile/android-smoke-test.png
+          if-no-files-found: warn
+
+      - name: Upload build logs artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-smoke-test-logs
+          path: artifacts/mobile/ci-logs
+          if-no-files-found: warn
