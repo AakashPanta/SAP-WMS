@@ -31,8 +31,11 @@ jobs:
 
       - name: Generate native Android project
         env:
+          CI: "1"
           EXPO_NO_GIT_STATUS: "1"
-        run: npx expo prebuild --platform android --clean --non-interactive
+        run: |
+          npx expo prebuild --platform android
+          pnpm install --no-frozen-lockfile
 
       - name: Enable KVM
         run: |
@@ -50,16 +53,24 @@ jobs:
           working-directory: artifacts/mobile/android
           script: |
             ./gradlew assembleDebug
-            adb install -r app/build/outputs/apk/debug/app-debug.apk
 
-            APP_ID=$(node -e "const app=require('../app.json'); console.log((app.expo && app.expo.android && app.expo.android.package) || app.android?.package || '')")
+            APK_PATH="app/build/outputs/apk/debug/app-debug.apk"
+            if [ ! -f "$APK_PATH" ]; then
+              echo "APK not found at $APK_PATH"
+              find app/build/outputs -type f || true
+              exit 1
+            fi
+
+            adb install -r "$APK_PATH"
+
+            APP_ID=$(node -e "const app=require('../app.json'); console.log((app.expo && app.expo.android && app.expo.android.package) || '')")
             if [ -z "$APP_ID" ]; then
               echo "Could not determine Android package name from app.json"
               exit 1
             fi
 
             adb shell monkey -p "$APP_ID" -c android.intent.category.LAUNCHER 1
-            sleep 15
+            sleep 20
 
             adb exec-out screencap -p > ../android-smoke-test.png
 
