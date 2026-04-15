@@ -584,7 +584,7 @@ export default function IndexScreen() {
   const navigateHome = () => {
     setErrorText("");
     setInfoText("Opening SAP...");
-    inject(\`window.location.href = \${${escapeForInjectedJs(SAP_RFUI_URL)}}; true;\`);
+    inject(`window.location.href = ${escapeForInjectedJs(SAP_RFUI_URL)}; true;`);
   };
 
   const handleNavigationChange = (navState: WebViewNavigation) => {
