@@ -1314,7 +1314,18 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add artifacts/mobile/app/index.tsx artifacts/mobile/package.json artifacts/mobile/pnpm-lock.yaml pnpm-lock.yaml
+
+          git add artifacts/mobile/app/index.tsx
+          git add artifacts/mobile/package.json
+
+          if [ -f pnpm-lock.yaml ]; then
+            git add pnpm-lock.yaml
+          fi
+
+          if [ -f artifacts/mobile/pnpm-lock.yaml ]; then
+            git add artifacts/mobile/pnpm-lock.yaml
+          fi
+
           git diff --cached --quiet && echo "No changes to commit" && exit 0
           git commit -m "Fix SAP UI state detection and blocking errors"
           git push
