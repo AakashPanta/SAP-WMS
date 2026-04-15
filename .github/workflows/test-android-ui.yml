@@ -1,0 +1,70 @@
+name: Test Android UI
+
+on:
+  workflow_dispatch:
+
+jobs:
+  android-smoke-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    defaults:
+      run:
+        working-directory: artifacts/mobile
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Enable pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@latest --activate
+
+      - name: Install dependencies
+        run: pnpm install --no-frozen-lockfile
+
+      - name: Generate native Android project
+        env:
+          EXPO_NO_GIT_STATUS: "1"
+        run: npx expo prebuild --platform android --clean --non-interactive
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Run Android emulator and smoke test
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          arch: x86_64
+          profile: pixel_7
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
+          working-directory: artifacts/mobile/android
+          script: |
+            ./gradlew assembleDebug
+            adb install -r app/build/outputs/apk/debug/app-debug.apk
+
+            APP_ID=$(node -e "const app=require('../app.json'); console.log((app.expo && app.expo.android && app.expo.android.package) || app.android?.package || '')")
+            if [ -z "$APP_ID" ]; then
+              echo "Could not determine Android package name from app.json"
+              exit 1
+            fi
+
+            adb shell monkey -p "$APP_ID" -c android.intent.category.LAUNCHER 1
+            sleep 15
+
+            adb exec-out screencap -p > ../android-smoke-test.png
+
+      - name: Upload screenshot artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-smoke-test
+          path: artifacts/mobile/android-smoke-test.png
