@@ -6,7 +6,7 @@ on:
 jobs:
   android-smoke-test:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
 
     defaults:
       run:
@@ -28,6 +28,14 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --no-frozen-lockfile
+
+      - name: Sync Expo dependencies first
+        env:
+          CI: "1"
+          EXPO_NO_GIT_STATUS: "1"
+        run: |
+          npx expo install --fix
+          pnpm install --no-frozen-lockfile
 
       - name: Generate native Android project
         env:
