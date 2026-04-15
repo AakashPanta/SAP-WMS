@@ -34,7 +34,12 @@ type Stage =
   | "submittingWarehouse"
   | "ready";
 
-type SapPageKind = "unknown" | "login" | "rfui-logon" | "rfui";
+type SapPageKind =
+  | "unknown"
+  | "login"
+  | "rfui-logon"
+  | "rfui"
+  | "rfui-error";
 
 type SapPageSnapshot = {
   url: string;
@@ -42,6 +47,13 @@ type SapPageSnapshot = {
   title: string;
   kind: SapPageKind;
   messages: string[];
+  hasWarehouse: boolean;
+  hasResource: boolean;
+  hasDevice: boolean;
+  resourceValue: string;
+  warehouseValue: string;
+  deviceValue: string;
+  isErrorPage: boolean;
 };
 
 function escapeForInjectedJs(value: string) {
@@ -53,7 +65,7 @@ const INSPECT_PAGE_JS = `
   function unique(values) {
     var out = [];
     for (var i = 0; i < values.length; i += 1) {
-      var v = String(values[i] || "").trim();
+      var v = String(values[i] || "").replace(/\\s+/g, " ").trim();
       if (v && out.indexOf(v) === -1) out.push(v);
     }
     return out;
@@ -61,6 +73,10 @@ const INSPECT_PAGE_JS = `
 
   function safeText(value) {
     return String(value || "").replace(/\\s+/g, " ").trim();
+  }
+
+  function lower(value) {
+    return safeText(value).toLowerCase();
   }
 
   function collectMessages() {
@@ -86,22 +102,53 @@ const INSPECT_PAGE_JS = `
       }
     });
 
-    if (!items.length && document.body) {
-      var bodyText = safeText(document.body.innerText || "");
+    var bodyText = document.body ? safeText(document.body.innerText || "") : "";
+    if (bodyText) {
       var lines = bodyText.split(/\\n+/).map(safeText).filter(Boolean);
-      items = lines.filter(function (line) {
-        var lower = line.toLowerCase();
-        return (
-          lower.indexOf("invalid") >= 0 ||
-          lower.indexOf("incorrect") >= 0 ||
-          lower.indexOf("error") >= 0 ||
-          lower.indexOf("failed") >= 0 ||
-          lower.indexOf("warning") >= 0
-        );
-      });
+      items = items.concat(
+        lines.filter(function (line) {
+          var t = line.toLowerCase();
+          return (
+            t.indexOf("stop application") >= 0 ||
+            t.indexOf("invalid") >= 0 ||
+            t.indexOf("incorrect") >= 0 ||
+            t.indexOf("error") >= 0 ||
+            t.indexOf("failed") >= 0 ||
+            t.indexOf("warning") >= 0
+          );
+        })
+      );
     }
 
-    return unique(items).slice(0, 5);
+    return unique(items).slice(0, 8);
+  }
+
+  function getInputMeta() {
+    return Array.prototype.slice.call(
+      document.querySelectorAll("input, textarea, select")
+    ).map(function (el) {
+      return {
+        name: safeText(el.getAttribute("name") || ""),
+        id: safeText(el.getAttribute("id") || ""),
+        type: safeText(el.getAttribute("type") || el.tagName || "").toLowerCase(),
+        placeholder: safeText(el.getAttribute("placeholder") || ""),
+        value: safeText(el.value || el.getAttribute("value") || ""),
+      };
+    });
+  }
+
+  function findField(inputs, hints) {
+    for (var i = 0; i < inputs.length; i += 1) {
+      var hay = lower(
+        inputs[i].name + " " +
+        inputs[i].id + " " +
+        inputs[i].placeholder
+      );
+      for (var j = 0; j < hints.length; j += 1) {
+        if (hay.indexOf(hints[j]) >= 0) return inputs[i];
+      }
+    }
+    return null;
   }
 
   function inspectPage() {
@@ -111,52 +158,51 @@ const INSPECT_PAGE_JS = `
       var bodyText = document.body ? safeText(document.body.innerText || "") : "";
       var lowerBody = bodyText.toLowerCase();
 
-      var inputs = Array.prototype.slice.call(
-        document.querySelectorAll("input, textarea, select")
-      ).map(function (el) {
-        return {
-          name: safeText(el.getAttribute("name") || ""),
-          id: safeText(el.getAttribute("id") || ""),
-          type: safeText(el.getAttribute("type") || el.tagName || "").toLowerCase(),
-          placeholder: safeText(el.getAttribute("placeholder") || ""),
-          autocomplete: safeText(el.getAttribute("autocomplete") || ""),
-        };
-      });
-
+      var inputs = getInputMeta();
       var hasPassword = !!document.querySelector('input[type="password"]');
+
+      var warehouseField = findField(inputs, ["warehouse", "lgnum"]);
+      var resourceField = findField(inputs, ["resource", "rsrc"]);
+      var deviceField = findField(inputs, ["presentation", "device", "pres", "disp"]);
+
       var hasWarehouse =
-        lowerBody.indexOf("warehouse") >= 0 ||
-        inputs.some(function (field) {
-          var hay =
-            (field.name + " " + field.id + " " + field.placeholder).toLowerCase();
-          return hay.indexOf("warehouse") >= 0 || hay.indexOf("lgnum") >= 0;
-        });
+        !!warehouseField ||
+        lowerBody.indexOf("warehouse") >= 0;
 
       var hasResource =
-        lowerBody.indexOf("resource") >= 0 ||
-        inputs.some(function (field) {
-          var hay =
-            (field.name + " " + field.id + " " + field.placeholder).toLowerCase();
-          return hay.indexOf("resource") >= 0 || hay.indexOf("rsrc") >= 0;
-        });
+        !!resourceField ||
+        lowerBody.indexOf("resource") >= 0;
 
       var hasDevice =
+        !!deviceField ||
         lowerBody.indexOf("pres. dev") >= 0 ||
-        lowerBody.indexOf("presentation device") >= 0 ||
-        inputs.some(function (field) {
-          var hay =
-            (field.name + " " + field.id + " " + field.placeholder).toLowerCase();
-          return (
-            hay.indexOf("device") >= 0 ||
-            hay.indexOf("presentation") >= 0 ||
-            hay.indexOf("pres") >= 0
-          );
-        });
+        lowerBody.indexOf("presentation device") >= 0;
+
+      var warehouseValue = warehouseField ? warehouseField.value : "";
+      var resourceValue = resourceField ? resourceField.value : "";
+      var deviceValue = deviceField ? deviceField.value : "";
+
+      var messages = collectMessages();
+      var combinedErrorText = lower(title + " " + bodyText + " " + messages.join(" "));
+      var isErrorPage =
+        combinedErrorText.indexOf("stop application") >= 0 ||
+        combinedErrorText.indexOf("invalid link") >= 0 ||
+        combinedErrorText.indexOf("could not reach the sap server") >= 0 ||
+        combinedErrorText.indexOf("network error") >= 0 ||
+        combinedErrorText.indexOf("application error") >= 0;
 
       var kind = "unknown";
       if (host.indexOf("accounts.cloud.sap") >= 0 || hasPassword) {
         kind = "login";
-      } else if (host.indexOf("s4hana.cloud.sap") >= 0 && hasWarehouse && hasResource) {
+      } else if (host.indexOf("s4hana.cloud.sap") >= 0 && isErrorPage) {
+        kind = "rfui-error";
+      } else if (
+        host.indexOf("s4hana.cloud.sap") >= 0 &&
+        hasWarehouse &&
+        hasResource &&
+        hasDevice &&
+        (!resourceValue || !deviceValue || !warehouseValue)
+      ) {
         kind = "rfui-logon";
       } else if (host.indexOf("s4hana.cloud.sap") >= 0) {
         kind = "rfui";
@@ -169,7 +215,14 @@ const INSPECT_PAGE_JS = `
           host: host,
           title: title || "SAP",
           kind: kind,
-          messages: collectMessages(),
+          messages: messages,
+          hasWarehouse: hasWarehouse,
+          hasResource: hasResource,
+          hasDevice: hasDevice,
+          warehouseValue: warehouseValue,
+          resourceValue: resourceValue,
+          deviceValue: deviceValue,
+          isErrorPage: isErrorPage
         }
       };
 
@@ -187,7 +240,6 @@ const INSPECT_PAGE_JS = `
   setTimeout(inspectPage, 50);
   setTimeout(inspectPage, 500);
   setTimeout(inspectPage, 1500);
-
   document.addEventListener("DOMContentLoaded", inspectPage);
   window.addEventListener("load", inspectPage);
 })();
@@ -211,9 +263,7 @@ function createLoginInjection(
       el.focus();
       el.value = value;
       var tracker = el._valueTracker;
-      if (tracker) {
-        tracker.setValue(last);
-      }
+      if (tracker) tracker.setValue(last);
       el.dispatchEvent(new Event("input", { bubbles: true }));
       el.dispatchEvent(new Event("change", { bubbles: true }));
       el.blur();
@@ -236,11 +286,7 @@ function createLoginInjection(
           (el.placeholder || "") + " " +
           (el.autocomplete || "")
         ).toLowerCase();
-        return (
-          hay.indexOf("user") >= 0 ||
-          hay.indexOf("email") >= 0 ||
-          hay.indexOf("login") >= 0
-        );
+        return hay.indexOf("user") >= 0 || hay.indexOf("email") >= 0 || hay.indexOf("login") >= 0;
       }) ||
       inputs.find(function (el) {
         var type = String(el.type || "").toLowerCase();
@@ -256,15 +302,13 @@ function createLoginInjection(
         ok: false,
         error: "Login fields not found on SAP page.",
       });
-      true;
-      return;
+      return true;
     }
 
     setNativeValue(usernameField, ${escapeForInjectedJs("__USERNAME__")});
     setNativeValue(passwordField, ${escapeForInjectedJs("__PASSWORD__")});
 
-    var wantKeepSignedIn = ${keepSignedIn ? "true" : "false"};
-    if (wantKeepSignedIn) {
+    if (${keepSignedIn ? "true" : "false"}) {
       var checkbox = Array.prototype.slice
         .call(document.querySelectorAll('input[type="checkbox"]'))
         .find(function (el) {
@@ -273,20 +317,11 @@ function createLoginInjection(
             var label = document.querySelector('label[for="' + el.id + '"]');
             labelText = getText(label);
           }
-          var combined = (
-            labelText + " " + (el.name || "") + " " + (el.id || "")
-          ).toLowerCase();
-
-          return (
-            combined.indexOf("keep me signed in") >= 0 ||
-            combined.indexOf("remember") >= 0 ||
-            combined.indexOf("keep") >= 0
-          );
+          var combined = (labelText + " " + (el.name || "") + " " + (el.id || "")).toLowerCase();
+          return combined.indexOf("keep me signed in") >= 0 || combined.indexOf("remember") >= 0 || combined.indexOf("keep") >= 0;
         });
 
-      if (checkbox && !checkbox.checked) {
-        checkbox.click();
-      }
+      if (checkbox && !checkbox.checked) checkbox.click();
     }
 
     var submitButton =
@@ -294,30 +329,17 @@ function createLoginInjection(
         .call(document.querySelectorAll('button, input[type="submit"], input[type="button"]'))
         .find(function (el) {
           var label = getText(el) || String(el.value || "").toLowerCase();
-          return (
-            label.indexOf("continue") >= 0 ||
-            label.indexOf("sign in") >= 0 ||
-            label.indexOf("login") >= 0 ||
-            label.indexOf("log on") >= 0
-          );
+          return label.indexOf("continue") >= 0 || label.indexOf("sign in") >= 0 || label.indexOf("login") >= 0 || label.indexOf("log on") >= 0;
         });
 
     if (submitButton) {
       submitButton.click();
     } else if (passwordField.form) {
-      if (typeof passwordField.form.requestSubmit === "function") {
-        passwordField.form.requestSubmit();
-      } else {
-        passwordField.form.submit();
-      }
+      if (typeof passwordField.form.requestSubmit === "function") passwordField.form.requestSubmit();
+      else passwordField.form.submit();
     }
 
-    post({
-      type: "ACTION_RESULT",
-      action: "login",
-      ok: true,
-      status: "submitted",
-    });
+    post({ type: "ACTION_RESULT", action: "login", ok: true, status: "submitted" });
   } catch (error) {
     window.ReactNativeWebView.postMessage(
       JSON.stringify({
@@ -350,9 +372,7 @@ function createWarehouseInjection(
       el.focus();
       el.value = value;
       var tracker = el._valueTracker;
-      if (tracker) {
-        tracker.setValue(last);
-      }
+      if (tracker) tracker.setValue(last);
       el.dispatchEvent(new Event("input", { bubbles: true }));
       el.dispatchEvent(new Event("change", { bubbles: true }));
       el.blur();
@@ -363,7 +383,7 @@ function createWarehouseInjection(
         document.querySelectorAll('input:not([type]), input[type="text"], textarea')
       );
 
-      var found = elements.find(function (el) {
+      return elements.find(function (el) {
         var hay = (
           (el.name || "") + " " +
           (el.id || "") + " " +
@@ -373,9 +393,7 @@ function createWarehouseInjection(
         return hints.some(function (hint) {
           return hay.indexOf(hint) >= 0;
         });
-      });
-
-      return found || null;
+      }) || null;
     }
 
     var textInputs = Array.prototype.slice.call(
@@ -384,10 +402,7 @@ function createWarehouseInjection(
 
     var warehouseField = findByHints(["warehouse", "lgnum"]) || textInputs[0] || null;
     var resourceField = findByHints(["resource", "rsrc"]) || textInputs[1] || null;
-    var deviceField =
-      findByHints(["presentation", "device", "pres", "disp"]) ||
-      textInputs[2] ||
-      null;
+    var deviceField = findByHints(["presentation", "device", "pres", "disp"]) || textInputs[2] || null;
 
     if (!warehouseField || !resourceField || !deviceField) {
       post({
@@ -396,8 +411,7 @@ function createWarehouseInjection(
         ok: false,
         error: "RFUI logon fields not found on SAP page.",
       });
-      true;
-      return;
+      return true;
     }
 
     setNativeValue(warehouseField, ${escapeForInjectedJs("__WAREHOUSE__")});
@@ -425,26 +439,14 @@ function createWarehouseInjection(
     if (submitButton) {
       submitButton.click();
     } else if (deviceField.form) {
-      if (typeof deviceField.form.requestSubmit === "function") {
-        deviceField.form.requestSubmit();
-      } else {
-        deviceField.form.submit();
-      }
+      if (typeof deviceField.form.requestSubmit === "function") deviceField.form.requestSubmit();
+      else deviceField.form.submit();
     } else {
-      deviceField.dispatchEvent(
-        new KeyboardEvent("keydown", { key: "Enter", code: "Enter", bubbles: true })
-      );
-      deviceField.dispatchEvent(
-        new KeyboardEvent("keyup", { key: "Enter", code: "Enter", bubbles: true })
-      );
+      deviceField.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", bubbles: true }));
+      deviceField.dispatchEvent(new KeyboardEvent("keyup", { key: "Enter", code: "Enter", bubbles: true }));
     }
 
-    post({
-      type: "ACTION_RESULT",
-      action: "warehouse",
-      ok: true,
-      status: "submitted",
-    });
+    post({ type: "ACTION_RESULT", action: "warehouse", ok: true, status: "submitted" });
   } catch (error) {
     window.ReactNativeWebView.postMessage(
       JSON.stringify({
@@ -486,8 +488,42 @@ export default function IndexScreen() {
 
   const allowedHosts = useMemo(() => ALLOWED_HOSTS, []);
 
+  const hasBlockingError = (snapshot: SapPageSnapshot | null) => {
+    if (!snapshot) return false;
+    if (snapshot.isErrorPage) return true;
+    return snapshot.messages.some((message) => {
+      const text = message.toLowerCase();
+      return (
+        text.includes("stop application") ||
+        text.includes("invalid") ||
+        text.includes("failed") ||
+        text.includes("error")
+      );
+    });
+  };
+
+  const isRealConnectedRfui = (snapshot: SapPageSnapshot | null) => {
+    if (!snapshot) return false;
+    if (snapshot.kind !== "rfui") return false;
+    if (snapshot.isErrorPage) return false;
+    if (hasBlockingError(snapshot)) return false;
+    return true;
+  };
+
   useEffect(() => {
     if (!page) return;
+
+    if (hasBlockingError(page)) {
+      if (page.kind === "login") {
+        setStage("login");
+      } else if (page.kind === "rfui-logon" || page.kind === "rfui-error") {
+        setStage("warehouse");
+      }
+      if (page.messages.length) {
+        setErrorText(page.messages[0]);
+      }
+      return;
+    }
 
     if (stage === "boot") {
       if (page.kind === "login") {
@@ -496,7 +532,7 @@ export default function IndexScreen() {
       } else if (page.kind === "rfui-logon") {
         setStage("warehouse");
         setInfoText("SAP session found. Complete warehouse setup.");
-      } else if (page.kind === "rfui") {
+      } else if (isRealConnectedRfui(page)) {
         setStage("ready");
         setInfoText("Connected to SAP.");
       }
@@ -508,7 +544,7 @@ export default function IndexScreen() {
         setStage("warehouse");
         setErrorText("");
         setInfoText("SAP login successful. Complete warehouse setup.");
-      } else if (page.kind === "rfui") {
+      } else if (isRealConnectedRfui(page)) {
         setStage("ready");
         setErrorText("");
         setInfoText("SAP login successful.");
@@ -520,13 +556,19 @@ export default function IndexScreen() {
     }
 
     if (stage === "submittingWarehouse") {
-      if (page.kind === "rfui") {
+      if (isRealConnectedRfui(page)) {
         setStage("ready");
         setErrorText("");
         setInfoText("Warehouse session connected successfully.");
-      } else if (page.kind === "rfui-logon" && page.messages.length) {
+      } else if (
+        page.kind === "rfui-logon" ||
+        page.kind === "rfui-error" ||
+        page.messages.length
+      ) {
         setStage("warehouse");
-        setErrorText(page.messages[0]);
+        if (page.messages.length) {
+          setErrorText(page.messages[0]);
+        }
       }
     }
   }, [page, stage]);
@@ -542,7 +584,7 @@ export default function IndexScreen() {
   const navigateHome = () => {
     setErrorText("");
     setInfoText("Opening SAP...");
-    inject(`window.location.href = ${escapeForInjectedJs(SAP_RFUI_URL)}; true;`);
+    inject(\`window.location.href = \${${escapeForInjectedJs(SAP_RFUI_URL)}}; true;\`);
   };
 
   const handleNavigationChange = (navState: WebViewNavigation) => {
@@ -559,17 +601,21 @@ export default function IndexScreen() {
           host: data.payload.host ?? "",
           title: data.payload.title ?? "SAP",
           kind: data.payload.kind ?? "unknown",
-          messages: Array.isArray(data.payload.messages)
-            ? data.payload.messages
-            : [],
+          messages: Array.isArray(data.payload.messages) ? data.payload.messages : [],
+          hasWarehouse: !!data.payload.hasWarehouse,
+          hasResource: !!data.payload.hasResource,
+          hasDevice: !!data.payload.hasDevice,
+          warehouseValue: data.payload.warehouseValue ?? "",
+          resourceValue: data.payload.resourceValue ?? "",
+          deviceValue: data.payload.deviceValue ?? "",
+          isErrorPage: !!data.payload.isErrorPage,
         };
 
         setPage(nextPage);
 
-        if (!errorText && nextPage.messages.length && stage !== "ready") {
+        if (nextPage.messages.length && stage !== "ready") {
           setErrorText(nextPage.messages[0]);
         }
-
         return;
       }
 
@@ -583,8 +629,7 @@ export default function IndexScreen() {
           }
         }
       }
-    } catch {
-    }
+    } catch {}
   };
 
   const submitLogin = () => {
@@ -602,7 +647,7 @@ export default function IndexScreen() {
       return;
     }
 
-    if (page?.kind === "rfui") {
+    if (isRealConnectedRfui(page)) {
       setStage("ready");
       setErrorText("");
       return;
@@ -624,7 +669,7 @@ export default function IndexScreen() {
       return;
     }
 
-    if (page?.kind === "rfui") {
+    if (isRealConnectedRfui(page)) {
       setStage("ready");
       setErrorText("");
       return;
@@ -633,7 +678,6 @@ export default function IndexScreen() {
     setErrorText("");
     setInfoText("Connecting warehouse session...");
     setStage("submittingWarehouse");
-
     inject(
       createWarehouseInjection(
         trimmedWarehouse,
@@ -677,9 +721,11 @@ export default function IndexScreen() {
               ? "SAP Login"
               : page?.kind === "rfui-logon"
                 ? "Warehouse Setup"
-                : page?.kind === "rfui"
-                  ? "SAP Session Ready"
-                  : "Connecting"}
+                : page?.kind === "rfui-error"
+                  ? "SAP Error"
+                  : page?.kind === "rfui"
+                    ? "SAP Session Ready"
+                    : "Connecting"}
           </Text>
         </View>
 
@@ -841,17 +887,23 @@ export default function IndexScreen() {
       <View style={styles.summaryGrid}>
         <View style={styles.summaryCard}>
           <Text style={styles.summaryLabel}>Warehouse</Text>
-          <Text style={styles.summaryValue}>{warehouse || "—"}</Text>
+          <Text style={styles.summaryValue}>
+            {page?.warehouseValue || warehouse || "—"}
+          </Text>
         </View>
 
         <View style={styles.summaryCard}>
           <Text style={styles.summaryLabel}>Resource</Text>
-          <Text style={styles.summaryValue}>{resource || "—"}</Text>
+          <Text style={styles.summaryValue}>
+            {page?.resourceValue || resource || "—"}
+          </Text>
         </View>
 
         <View style={styles.summaryCard}>
           <Text style={styles.summaryLabel}>Device</Text>
-          <Text style={styles.summaryValue}>{presentationDevice || "—"}</Text>
+          <Text style={styles.summaryValue}>
+            {page?.deviceValue || presentationDevice || "—"}
+          </Text>
         </View>
 
         <View style={styles.summaryCard}>
@@ -897,13 +949,9 @@ export default function IndexScreen() {
               </View>
             </View>
           )}
-          {stage === "login" || stage === "authenticating"
-            ? renderLogin()
-            : null}
-          {stage === "warehouse" || stage === "submittingWarehouse"
-            ? renderWarehouse()
-            : null}
-          {stage === "ready" ? renderReady() : null}
+          {(stage === "login" || stage === "authenticating") && renderLogin()}
+          {(stage === "warehouse" || stage === "submittingWarehouse") && renderWarehouse()}
+          {stage === "ready" && renderReady()}
         </ScrollView>
       </KeyboardAvoidingView>
 
@@ -981,17 +1029,9 @@ export default function IndexScreen() {
 }
 
 const styles = StyleSheet.create({
-  flex: {
-    flex: 1,
-  },
-  safeArea: {
-    flex: 1,
-    backgroundColor: "#081A31",
-  },
-  contentContainer: {
-    padding: 16,
-    paddingBottom: 28,
-  },
+  flex: { flex: 1 },
+  safeArea: { flex: 1, backgroundColor: "#081A31" },
+  contentContainer: { padding: 16, paddingBottom: 28 },
   heroCard: {
     backgroundColor: "#0F2747",
     borderRadius: 24,
@@ -1000,10 +1040,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "#1A3B67",
   },
-  logoWrap: {
-    flexDirection: "row",
-    alignItems: "center",
-  },
+  logoWrap: { flexDirection: "row", alignItems: "center" },
   logoBadge: {
     width: 58,
     height: 58,
@@ -1019,23 +1056,10 @@ const styles = StyleSheet.create({
     fontWeight: "800",
     letterSpacing: 0.5,
   },
-  logoMeta: {
-    flex: 1,
-  },
-  title: {
-    color: "#FFFFFF",
-    fontSize: 22,
-    fontWeight: "800",
-  },
-  subtitle: {
-    color: "#BCD1EA",
-    fontSize: 13,
-    marginTop: 4,
-  },
-  statusRow: {
-    marginTop: 18,
-    marginBottom: 12,
-  },
+  logoMeta: { flex: 1 },
+  title: { color: "#FFFFFF", fontSize: 22, fontWeight: "800" },
+  subtitle: { color: "#BCD1EA", fontSize: 13, marginTop: 4 },
+  statusRow: { marginTop: 18, marginBottom: 12 },
   statusPill: {
     alignSelf: "flex-start",
     backgroundColor: "#183B67",
@@ -1044,20 +1068,9 @@ const styles = StyleSheet.create({
     borderRadius: 999,
     marginBottom: 10,
   },
-  statusPillText: {
-    color: "#FFFFFF",
-    fontSize: 12,
-    fontWeight: "700",
-  },
-  pageText: {
-    color: "#D8E5F3",
-    fontSize: 13,
-  },
-  infoText: {
-    color: "#D8E5F3",
-    fontSize: 13,
-    lineHeight: 19,
-  },
+  statusPillText: { color: "#FFFFFF", fontSize: 12, fontWeight: "700" },
+  pageText: { color: "#D8E5F3", fontSize: 13 },
+  infoText: { color: "#D8E5F3", fontSize: 13, lineHeight: 19 },
   errorBox: {
     marginTop: 14,
     backgroundColor: "#FFECEC",
@@ -1081,11 +1094,7 @@ const styles = StyleSheet.create({
     padding: 18,
     marginBottom: 16,
   },
-  cardTitle: {
-    color: "#10243F",
-    fontSize: 20,
-    fontWeight: "800",
-  },
+  cardTitle: { color: "#10243F", fontSize: 20, fontWeight: "800" },
   cardSubtitle: {
     color: "#5E7088",
     fontSize: 13,
@@ -1149,9 +1158,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     marginTop: 4,
   },
-  primaryButtonDisabled: {
-    opacity: 0.7,
-  },
+  primaryButtonDisabled: { opacity: 0.7 },
   primaryButtonText: {
     color: "#FFFFFF",
     fontSize: 15,
@@ -1178,10 +1185,7 @@ const styles = StyleSheet.create({
     marginBottom: 4,
     marginHorizontal: -6,
   },
-  summaryCard: {
-    width: "50%",
-    padding: 6,
-  },
+  summaryCard: { width: "50%", padding: 6 },
   summaryLabel: {
     color: "#5E7088",
     fontSize: 12,
@@ -1232,9 +1236,7 @@ const styles = StyleSheet.create({
     fontWeight: "800",
     marginBottom: 10,
   },
-  liveHeaderButtons: {
-    flexDirection: "row",
-  },
+  liveHeaderButtons: { flexDirection: "row" },
   liveHeaderButton: {
     backgroundColor: "#183B67",
     borderRadius: 12,
@@ -1247,9 +1249,7 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: "700",
   },
-  liveHeaderButtonTextDisabled: {
-    opacity: 0.45,
-  },
+  liveHeaderButtonTextDisabled: { opacity: 0.45 },
   webView: {
     flex: 1,
     backgroundColor: "#FFFFFF",
